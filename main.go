@@ -131,7 +131,7 @@ func (v *recCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 	}
 
 	for _, p := range processes {
-		if strings.Contains(p.Executable(), "ScreenSaverEngine") {
+		if strings.Contains(p.Executable(), "ScreenSaverEngin") {
 			return subcommands.ExitSuccess
 		}
 	}
