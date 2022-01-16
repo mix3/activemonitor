@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -16,17 +17,22 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-type dateValue struct {
+const (
+	layoutDate     = "2006-01-02"
+	layoutDateTime = "2006-01-02 15:04:05"
+)
+
+type Time struct {
 	time.Time
 }
 
-func (v *dateValue) Set(str string) (err error) {
-	v.Time, err = time.Parse("2006-01-02", str)
+func (v *Time) Set(str string) (err error) {
+	v.Time, err = time.Parse(layoutDate, str)
 	return
 }
 
 type showCmd struct {
-	date     dateValue
+	date     Time
 	dbpath   string
 	interval int
 }
@@ -40,17 +46,17 @@ func (*showCmd) Usage() string {
 }
 
 func (v *showCmd) SetFlags(f *flag.FlagSet) {
-	var (
-		defaultDB       = os.Getenv("HOME") + "/.activemonitor.db"
-		defaultInterval = 300
-	)
 	f.Var(&v.date, "date", "date")
-	f.StringVar(&v.dbpath, "dbpath", defaultDB, "dbpath")
 	f.IntVar(&v.interval, "interval", defaultInterval, "interval")
 }
 
 func (v *showCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
-	db, err := sql.Open("sqlite3", v.dbpath)
+	path := dbPath(dbDir, v.date)
+	if _, err := os.Stat(path); err != nil {
+		log.Println(err)
+		return subcommands.ExitFailure
+	}
+	db, err := sql.Open("sqlite3", path)
 	if err != nil {
 		log.Println(err)
 		return subcommands.ExitFailure
@@ -60,8 +66,8 @@ func (v *showCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) 
 	var (
 		sTime = v.date.Add(time.Hour * 5)
 		eTime = sTime.Add(time.Hour*24 + time.Second*-1)
-		sStr  = sTime.Format("2006-01-02 15:04:05")
-		eStr  = eTime.Format("2006-01-02 15:04:05")
+		sStr  = sTime.Format(layoutDateTime)
+		eStr  = eTime.Format(layoutDateTime)
 	)
 	rows, err := db.Query(`
 SELECT
@@ -105,23 +111,18 @@ GROUP BY time
 }
 
 type recCmd struct {
-	dbpath string
+	dbDir string
 }
 
 func (*recCmd) Name() string     { return "rec" }
 func (*recCmd) Synopsis() string { return "rec for activemonitor" }
 func (*recCmd) Usage() string {
-	return `rec [-dbpath <dbpath>]:
+	return `rec:
   rec for activemonitor
 `
 }
 
-func (r *recCmd) SetFlags(f *flag.FlagSet) {
-	var (
-		defaultDB = os.Getenv("HOME") + "/.activemonitor.db"
-	)
-	f.StringVar(&r.dbpath, "dbpath", defaultDB, "dbpath")
-}
+func (r *recCmd) SetFlags(f *flag.FlagSet) {}
 
 func (v *recCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	processes, err := ps.Processes()
@@ -136,7 +137,7 @@ func (v *recCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 		}
 	}
 
-	db, err := sql.Open("sqlite3", v.dbpath)
+	db, err := sql.Open("sqlite3", dbPath(v.dbDir, currentDate()))
 	if err != nil {
 		log.Println(err)
 		return subcommands.ExitFailure
@@ -147,8 +148,8 @@ func (v *recCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 CREATE TABLE IF NOT EXISTS receive (
 	time DATETIME CHECK (time like '____-__-__ __:__:__') PRIMARY KEY
 );
-INSERT INTO receive VALUES (DATETIME('now', '+9 hour'));
-`)
+INSERT INTO receive VALUES (?);
+`, now.Format(layoutDateTime))
 	if err != nil {
 		log.Println(err)
 		return subcommands.ExitFailure
@@ -162,16 +163,49 @@ func main() {
 	subcommands.Register(subcommands.FlagsCommand(), "")
 	subcommands.Register(subcommands.CommandsCommand(), "")
 	subcommands.Register(&showCmd{date: currentDate()}, "")
-	subcommands.Register(&recCmd{}, "")
+	subcommands.Register(&recCmd{dbDir: dbDir}, "")
 
 	flag.Parse()
 	ctx := context.Background()
 	os.Exit(int(subcommands.Execute(ctx)))
 }
 
-func currentDate() dateValue {
-	t := time.Now()
-	t = t.Add(time.Hour * -5)
+const (
+	envDateTime = "NOW"
+	envDBDir    = "DB_DIR"
+
+	defaultInterval = 300
+)
+
+var (
+	now   = time.Now()
+	dbDir = filepath.Join(os.Getenv("HOME"), ".activemonitor")
+)
+
+func init() {
+	if v, ok := os.LookupEnv(envDateTime); ok {
+		_now, err := time.Parse(layoutDateTime, v)
+		if err != nil {
+			panic(err)
+		}
+		now = _now
+	}
+	if v, ok := os.LookupEnv(envDBDir); ok {
+		dbDir = v
+	}
+}
+
+func currentDate() Time {
+	t := now.Add(time.Hour * -5)
 	t = t.Truncate(time.Hour).Add(-time.Duration(t.Hour()) * time.Hour)
-	return dateValue{t}
+	return Time{t}
+}
+
+func dbPath(dir string, date Time) string {
+	return filepath.Join(dir, date.Format("20060102")+".db")
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
